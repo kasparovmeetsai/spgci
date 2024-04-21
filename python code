@@ -8,3 +8,29 @@ tenders = lng.get_tenders(country_name="United States", paginate=True)
 
 # Optionally, filter tenders by contract type and option
 fob_tenders = lng.get_tenders(contract_type="FOB", contract_option="Sell")
+
+
+import spgci as ci
+
+def fetch_refinery_alerts(username, password, appkey):
+    # Set the credentials for SPGCI API access
+    ci.set_credentials(username, password, appkey)
+
+    # Instantiate the WorldRefineryData class
+    wrd = ci.WorldRefineryData()
+
+    # Fetch the refinery alerts; for example, fetch outages
+    # Assuming `get_outages` method exists and fetches relevant alerts
+    # You might need to pass specific parameters such as refinery_id or date range if applicable
+    refinery_alerts = wrd.get_outages()  # This method might need more specific parameters based on your needs
+
+    # Return the DataFrame containing the alerts
+    return refinery_alerts
+
+# Example usage (replace 'your_username', 'your_password', and 'your_appkey' with actual credentials)
+if __name__ == "__main__":
+    username = 'your_username'
+    password = 'your_password'
+    appkey = 'your_appkey'
+    alerts = fetch_refinery_alerts(username, password, appkey)
+    print(alerts)
