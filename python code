@@ -1,0 +1,10 @@
+import spgci as ci
+
+# Instantiate the LNGGlobalAnalytics class
+lng = ci.LNGGlobalAnalytics()
+
+# Get tenders for a specific country and contract type
+tenders = lng.get_tenders(country_name="United States", paginate=True)
+
+# Optionally, filter tenders by contract type and option
+fob_tenders = lng.get_tenders(contract_type="FOB", contract_option="Sell")
