@@ -93,3 +93,67 @@ plt.show()
 plot_pacf(df, lags=25)
 plt.title('PACF for Oil Futures Prices')
 plt.show()
+
+
+
+
+
+
+
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import pandas as pd
+
+# Ensure that the 'Date' column is the index and in datetime format
+df.index = pd.to_datetime(df.index)
+
+# Select the series from the DataFrame
+df_price = df['LAST_PRICE'].dropna().astype(float)
+
+# Specify the number of steps to forecast ahead
+n_forecast = 1
+
+# Create an empty list to store predictions
+predictions = []
+predictions_index = []
+
+# Create an empty list to store the actual values (for comparison)
+actuals = []
+
+# The train/test loop
+for i in range(len(df_price) - n_forecast):
+    # Define the train data
+    train = df_price.iloc[:i+n_forecast]
+    
+    # Define the model
+    model = SARIMAX(train, order=(1,1,0), seasonal_order=(0,0,0,0))
+    
+    # Fit the model
+    model_fit = model.fit(disp=False)
+    
+    # Define the test data (next value)
+    actual = df_price.iloc[i+n_forecast]
+    actuals.append(actual)
+    
+    # Forecast
+    forecast = model_fit.forecast(steps=n_forecast)
+    
+    # Store the forecast and its corresponding time index
+    predictions.append(forecast.iloc[0])
+    predictions_index.append(df_price.index[i+n_forecast])
+
+# Create a predictions DataFrame
+predictions_df = pd.DataFrame(predictions, index=predictions_index, columns=['Predicted'])
+
+# Create an actuals DataFrame
+actuals_df = pd.DataFrame(actuals, index=predictions_index, columns=['Actual'])
+
+# Plot
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,6))
+plt.plot(df_price, label='Original')
+plt.plot(predictions_df, label='One-step-ahead Forecast', color='red')
+plt.plot(actuals_df, label='Actual', color='green', alpha=0.7)
+plt.legend()
+plt.show()
+
