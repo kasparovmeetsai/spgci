@@ -157,3 +157,52 @@ plt.plot(actuals_df, label='Actual', color='green', alpha=0.7)
 plt.legend()
 plt.show()
 
+
+
+
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import pandas as pd
+
+# Ensure 'Date' is the index and in datetime format if it's not already.
+df.index = pd.to_datetime(df.index)
+
+# Assuming 'LAST_PRICE' is the column with the prices.
+# Ensure no missing values and the data type is float.
+df_price = df['LAST_PRICE'].dropna().astype(float)
+
+# Starting with 1000 historical data points for the initial model
+initial_size = 1000
+initial_train = df_price.iloc[:initial_size]
+
+# Fit the initial SARIMAX model
+initial_model = SARIMAX(initial_train, order=(1,1,0), seasonal_order=(0,0,0,0))
+initial_fit = initial_model.fit(disp=False)
+
+# Now we will forecast in a rolling manner starting from initial_size
+predictions = []
+predictions_index = []
+
+for i in range(initial_size, len(df_price)):
+    # Obtain the actual value for the day
+    actual_value = df_price.iloc[i]
+    
+    # Forecast the next step
+    next_forecast = initial_fit.forecast(steps=1)
+    
+    # Store the forecast and its corresponding time index
+    predictions.append(next_forecast.iloc[0])
+    predictions_index.append(df_price.index[i])
+    
+    # Update the model by appending the new observation
+    initial_fit = initial_fit.extend([actual_value])
+
+# Convert predictions to a Series for easy plotting
+predictions_series = pd.Series(predictions, index=predictions_index)
+
+# Plot
+plt.figure(figsize=(10,6))
+plt.plot(df_price, label='Original')
+plt.plot(predictions_series, label='Predicted', color='red')
+plt.legend()
+plt.show()
+
