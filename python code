@@ -206,3 +206,27 @@ plt.plot(predictions_series, label='Predicted', color='red')
 plt.legend()
 plt.show()
 
+
+
+
+from arch import arch_model
+import pandas as pd
+
+# Assuming 'df' is your DataFrame and 'LAST_PRICE' is the column with the prices
+# Calculate returns as percentage change
+returns = 100 * df['LAST_PRICE'].pct_change().dropna()
+
+# Specify the mean model (constant, ARX, HARX, etc.) and the volatility process (GARCH)
+am = arch_model(returns, vol='Garch', p=1, q=1)
+
+# Fit the model
+res = am.fit(update_freq=5)
+
+# Print the summary of the model's fit
+print(res.summary())
+
+# Plot the model's conditional volatility
+fig = res.plot(annualize='D')
+
+
+
