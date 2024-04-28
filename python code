@@ -230,3 +230,70 @@ fig = res.plot(annualize='D')
 
 
 
+
+
+import pandas as pd
+from statsmodels.tsa.arima.model import ARIMA
+from arch import arch_model
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Ensure 'Date' is the index and in datetime format if it's not already.
+df.index = pd.to_datetime(df.index)
+
+# Assuming 'LAST_PRICE' is the column with the prices.
+df['returns'] = 100 * df['LAST_PRICE'].pct_change().dropna()
+
+# Initial dataset for ARIMA and GARCH
+initial_size = 1000
+train_returns = df['returns'].iloc[1:initial_size+1]  # Skip the first NaN value
+
+# Fit ARIMA model to predict returns
+arima_model = ARIMA(train_returns, order=(1,1,0))
+arima_res = arima_model.fit()
+
+# Fit GARCH model to predict volatility of returns
+garch_model = arch_model(train_returns, vol='Garch', p=1, q=1)
+garch_res = garch_model.fit(last_obs=train_returns.index[-1], disp='off')
+
+# Initialize list to keep track of predictions and actual prices
+price_predictions = []
+price_actuals = []
+dates = []
+
+last_price = df['LAST_PRICE'].iloc[initial_size]
+
+# Walk forward over the time series, re-estimating the ARIMA and GARCH models at each step
+for t in range(initial_size, len(df['returns'])-1):
+    # Get next date's return prediction from ARIMA
+    next_return = arima_res.forecast(steps=1).predicted_mean.iloc[0]
+    
+    # Forecast the next day's volatility with GARCH
+    next_vol = np.sqrt(garch_res.forecast(horizon=1).variance.iloc[-1]).iloc[0]
+    
+    # Convert the return prediction to a price prediction
+    next_price = last_price * (1 + next_return / 100)
+    
+    # Append to our lists
+    price_predictions.append(next_price)
+    price_actuals.append(df['LAST_PRICE'].iloc[t + 1])
+    dates.append(df.index[t + 1])
+    
+    # Update last price
+    last_price = df['LAST_PRICE'].iloc[t + 1]
+    
+    # Update the models with the new data point
+    new_return = df['returns'].iloc[t + 1]
+    arima_res = arima_res.append([new_return])
+    garch_res = garch_res.append([new_return], last_obs=t+1, disp='off')
+
+# Plot the results
+plt.figure(figsize=(10, 6))
+plt.plot(dates, price_actuals, label='Actual Prices')
+plt.plot(dates, price_predictions, label='Predicted Prices', color='red')
+plt.xlabel('Date')
+plt.ylabel('Price')
+plt.title('Price Forecast vs Actual')
+plt.legend()
+plt.show()
+
