@@ -1,107 +1,118 @@
-import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from numpy.linalg import eig
 
-def wf_max_autocorr_series(returns_df, lookback=80, shrink=0.10, rebalance="W-FRI"):
+# ---------- core: multi-lag max-autocorr weights ----------
+def max_autocorr_multilag_weights(
+    X_window: pd.DataFrame,
+    lags: int = 5,
+    lag_weights: np.ndarray | None = None,
+    shrink: float = 0.10,
+    standardize: bool = True,
+):
     """
-    Walk-forward: each rebalance date, compute w maximizing lag-1 autocorr of y_t = w'x_t
-    by solving C1 w = λ C0 w on last 'lookback' days; then apply to next period.
+    Solve  argmax_w   (w' C_agg w) / (w' C0 w),
+    where C_agg = sum_{ℓ=1..L} ω_ℓ * Cov(x_t, x_{t-ℓ})  and  C0 = Cov(x_t).
+    Returns w normalized so that w' C0 w = 1 (unit variance in-window).
+    
+    X_window : T×N DataFrame of *changes* (returns or dollar diffs) over the lookback
+    lags     : number of positive lags included
+    lag_weights : array of length `lags` (default: exponential decay)
+    shrink   : diagonal shrinkage (0..1) for stability
+    standardize : if True, z-score each column within the window (robust to scale)
     """
-    X = returns_df.copy()
+    W = X_window.copy()
+    # (optional) per-window standardization for scale invariance
+    if standardize:
+        W = (W - W.mean()) / W.std(ddof=1).replace(0.0, np.nan)
+        W = W.dropna(how="any")
+    else:
+        W = W - W.mean()
+
+    T, N = W.shape
+    if T < lags + 2 or N == 0:
+        return pd.Series(np.zeros(N), index=X_window.columns)
+
+    if lag_weights is None:
+        # Exponential decay toward longer lags (tune tau if you wish)
+        tau = max(2, lags/2)
+        lag_weights = np.exp(-(np.arange(1, lags+1))/tau)
+        lag_weights = lag_weights / lag_weights.sum()
+
+    Xv = W.values
+    # C0: contemporaneous covariance
+    C0 = (Xv.T @ Xv) / (T - 1)
+    # shrink toward diagonal
+    C0 = (1 - shrink) * C0 + shrink * np.diag(np.diag(C0))
+
+    # Aggregate cross-covariances over lags
+    Cagg = np.zeros_like(C0)
+    for L, wL in zip(range(1, lags+1), lag_weights):
+        Xf, Xb = Xv[L:], Xv[:-L]           # align t with t-L
+        Cℓ = (Xf.T @ Xb) / (T - L)
+        # symmetrize & shrink for numerical stability
+        Cℓ = 0.5 * (Cℓ + Cℓ.T)
+        Cℓ = (1 - shrink) * Cℓ + shrink * np.diag(np.diag(Cℓ))
+        Cagg += wL * Cℓ
+
+    # Generalized eigenproblem: Cagg w = λ C0 w  → eig(C0^{-1} Cagg)
+    A = np.linalg.pinv(C0) @ Cagg
+    vals, vecs = eig(A)
+    k = np.argmax(np.real(vals))
+    w = np.real(vecs[:, k])
+
+    # Normalize to unit variance under C0: w' C0 w = 1
+    var_y = float(w.T @ C0 @ w)
+    if var_y > 1e-12:
+        w = w / np.sqrt(var_y)
+    else:
+        w = np.zeros_like(w)
+
+    return pd.Series(w, index=X_window.columns)
+
+# ---------- walk-forward wrapper (weekly rebalancing by default) ----------
+def wf_max_autocorr_multilag_series(
+    X: pd.DataFrame,
+    lookback: int = 80,
+    lags: int = 5,
+    lag_weights: np.ndarray | None = None,
+    shrink: float = 0.10,
+    standardize: bool = True,
+    rebalance: str = "W-FRI",  # "D" for daily; "W-FRI" for weekly
+):
+    """
+    Walk-forward series using multi-lag persistence weights.
+    X must be *changes* (returns or dollar diffs). Output y is the 1-step-ahead OOS change.
+    """
     X = X.dropna(how="all")
-    rebal_dates = X.resample(rebalance).last().index.intersection(X.index)
-    weights = pd.DataFrame(np.nan, index=X.index, columns=X.columns)
-    y_ret = pd.Series(0.0, index=X.index)
+    idx = X.index
+
+    # rebalancing dates
+    if rebalance == "D":
+        rebal_dates = idx
+    else:
+        rebal_dates = X.resample(rebalance).last().index.intersection(idx)
+
+    weights = pd.DataFrame(np.nan, index=idx, columns=X.columns)
+    y = pd.Series(0.0, index=idx)
 
     for t in rebal_dates:
-        i = X.index.get_loc(t)
-        if i < lookback or i >= len(X)-1: 
+        i = idx.get_loc(t)
+        if i < lookback or i >= len(idx) - 1:
             continue
-        W = X.iloc[i-lookback:i]
-        Wc = W - W.mean()
-        if len(Wc) < lookback: 
+        win = X.iloc[i - lookback : i].dropna(how="any")
+        if len(win) < max(lookback // 2, lags + 2):
             continue
 
-        # C0 = Cov(x_t), C1 = Cov(x_t, x_{t-1}) over window
-        Xf, Xb = Wc.values[1:], Wc.values[:-1]
-        C0 = (Wc.values.T @ Wc.values) / (len(Wc)-1)
-        C1 = (Xf.T @ Xb) / (len(Wc)-1)
+        w_t = max_autocorr_multilag_weights(
+            win, lags=lags, lag_weights=lag_weights,
+            shrink=shrink, standardize=standardize
+        )
+        weights.iloc[i] = w_t.values
 
-        # shrink & symmetrize for stability
-        C0 = (1-shrink)*C0 + shrink*np.diag(np.diag(C0))
-        C1s = 0.5*(C1 + C1.T)
-        C1s = (1-shrink)*C1s + shrink*np.diag(np.diag(C1s))
+        # 1-step-ahead out-of-sample *change* (return or dollar diff)
+        y.iloc[i + 1] = float(X.iloc[i + 1].values @ w_t.values)
 
-        # generalized eigen: C1s w = λ C0 w  → eig(C0^{-1} C1s)
-        A = np.linalg.pinv(C0) @ C1s
-        vals, vecs = eig(A)
-        w = np.real(vecs[:, np.argmax(np.real(vals))])
-        # normalize to unit variance in-window: w' C0 w = 1
-        var_y = float(w.T @ C0 @ w)
-        if var_y <= 1e-12: 
-            continue
-        w = w / np.sqrt(var_y)
-
-        weights.iloc[i] = w
-        # apply to next day (strictly OOS)
-        y_ret.iloc[i+1] = float(X.iloc[i+1].values @ w)
-
-    # forward-fill weights between rebalances (for plotting)
+    # carry last weights forward for readability (optional)
     weights = weights.ffill()
-    return weights, y_ret
-
-# ---------- DEMO (synthetic noisy series with weak persistent driver) ----------
-np.random.seed(10)
-T, N = 600, 6
-dates = pd.bdate_range("2020-01-01", periods=T)
-
-# Hidden AR(1) driver + idiosyncratic noise
-phi = 0.30
-z = np.zeros(T); eps = np.random.normal(scale=0.8, size=T)
-for t in range(1, T):
-    z[t] = phi*z[t-1] + eps[t]
-alphas = np.array([1.0, 0.8, 0.6, 0.5, -0.2, -0.6])
-noise  = np.random.normal(scale=[1.2,1.0,0.9,0.9,0.8,1.1], size=(T,N))
-returns = pd.DataFrame(z.reshape(-1,1)@alphas.reshape(1,-1) + noise, index=dates,
-                       columns=[f"S{i+1}" for i in range(N)])
-
-# Walk-forward lag-1 autocorr optimizer (weekly rebal)
-W, y = wf_max_autocorr_series(returns, lookback=80, shrink=0.10, rebalance="W-FRI")
-
-# Benchmarks and diagnostics
-y_eq = returns.mean(axis=1)
-cum_opt = (1 + y.fillna(0)/40).cumprod()
-cum_eq  = (1 + y_eq/40).cumprod()
-
-def rolling_lag1(series, win=120):
-    a = series.fillna(0).values
-    out = np.full(len(series), np.nan)
-    for t in range(win, len(series)):
-        b = a[t-win:t]; b = b - b.mean(); sd = b.std()
-        out[t] = np.corrcoef(b[1:], b[:-1])[0,1] if sd>1e-8 else np.nan
-    return pd.Series(out, index=series.index)
-
-rho_opt = rolling_lag1(y,    win=120)
-rho_eq  = rolling_lag1(y_eq, win=120)
-
-# ---------- PLOTS (saved as PNGs) ----------
-plt.figure(figsize=(9,3.6))
-plt.plot(W.index, W.values)
-plt.title("Walk-forward max-autocorr weights (weekly rebal, lookback=80)")
-plt.ylabel("Weight"); plt.grid(True, ls="--", alpha=0.5)
-plt.tight_layout(); plt.savefig("weights_wf.png"); plt.close()
-
-plt.figure(figsize=(9,3.6))
-plt.plot(rho_opt.index, rho_opt.values, label="Optimized")
-plt.plot(rho_eq.index,  rho_eq.values,  label="Equal-weight")
-plt.title("Rolling lag-1 autocorrelation of returns (win=120)")
-plt.ylabel("lag-1 ρ"); plt.legend(); plt.grid(True, ls="--", alpha=0.5)
-plt.tight_layout(); plt.savefig("rho_wf.png"); plt.close()
-
-plt.figure(figsize=(9,3.6))
-plt.plot(cum_opt.index, cum_opt.values, label="Optimized")
-plt.plot(cum_eq.index,  cum_eq.values,  label="Equal-weight")
-plt.title("Cumulative series (scaled, OOS, weekly rebal)")
-plt.ylabel("Cumulative value"); plt.legend(); plt.grid(True, ls="--", alpha=0.5)
-plt.tight_layout(); plt.savefig("cum_wf.png"); plt.close()
-
-print("Saved: weights_wf.png, rho_wf.png, cum_wf.png")
+    return weights, y
