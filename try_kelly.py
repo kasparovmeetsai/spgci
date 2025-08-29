@@ -90,3 +90,25 @@ def allocate_half_kelly(
     weights[weights.abs() < 1e-12] = 0.0
 
     return weights
+    
+    
+    
+# Compute Sharpe slope (first difference)
+sharpe_slope = sharpe_df.diff()
+
+# Parameters for blending level + slope
+alpha, beta = 1.0, 0.5   # tune these
+score_combo = alpha * sharpe_df + beta * sharpe_slope
+
+# Gating logic:
+# If Sharpe < 0 but slope > 0 → allow partial allocation (e.g. 25%)
+# If Sharpe > 0 and slope > 0 → full allocation
+# If Sharpe > 0 and slope < 0 → reduce allocation
+gate = pd.DataFrame(0.0, index=sharpe_df.index, columns=sharpe_df.columns)
+
+gate[(sharpe_df < 0) & (sharpe_slope > 0)] = 0.25
+gate[(sharpe_df > 0) & (sharpe_slope > 0)] = 1.0
+gate[(sharpe_df > 0) & (sharpe_slope < 0)] = 0.5
+
+# Raw Kelly scores, adjusted by gate and blended score
+raw_scores = (kelly_frac * (1 + score_combo.clip(lower=0)) * gate).fillna(0.0)
